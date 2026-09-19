@@ -7,6 +7,8 @@ RERANK_CONSTANT = 60
 
 def search(request: SearchRequest, vector: VectorStore) -> list[SearchResult]:
     where = {}
+    if request.bundle:
+        where["bundle"] = request.bundle
     if request.type:
         where["type"] = request.type
     if request.tags:
@@ -49,6 +51,7 @@ def _d(hit: dict) -> float:
 def _to_result(hit: dict, score: float) -> SearchResult:
     metadata = hit.get("metadata") or {}
     return SearchResult(
+        bundle=metadata.get("bundle", ""),
         concept_path=hit["concept_path"],
         type=metadata.get("type", ""),
         title=metadata.get("title"),

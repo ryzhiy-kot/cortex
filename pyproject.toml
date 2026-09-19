@@ -21,6 +21,15 @@ embeddings = [
     "google-cloud-aiplatform>=1.80.0",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.8.0",
+]
+
+[tool.fastapi]
+entrypoint = "cortex.api.app:app"
+
 [project.scripts]
 cortex = "cortex.main:main"
 

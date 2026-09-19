@@ -1,6 +1,6 @@
 # Cortex
 
-Cortex is a knowledge service that exposes retrieval and ingestion APIs over an OKF bundle. It does not contain an LLM agent; instead, it provides structured tools for external agentic systems to query, navigate, and ingest knowledge.
+Cortex is a knowledge service that exposes retrieval and ingestion APIs over OKF bundles. It does not contain an LLM agent; instead, it provides structured tools for external agentic systems to query, navigate, and ingest knowledge.
 
 ## Language
 
@@ -17,7 +17,7 @@ A single `.md` file with YAML frontmatter (`type` required) and markdown body. T
 _Avoid_: document, file, page
 
 **Concept path**:
-The bundle-relative path without `.md` (e.g. `tables/orders`). Serves as the concept's unique identity across the system.
+The bundle-qualified path without `.md`, formed as `{bundle}/{bundle-relative path}` (e.g. `retail/tables/orders`). Serves as the concept's unique identity across the system; the first segment names the bundle.
 _Avoid_: document id, file path
 
 **index.md**:
@@ -29,19 +29,19 @@ Cortex's architectural role: provides search, read, list, ingest, and validate e
 _Avoid_: agent, orchestrator
 
 **BundleStore**:
-An abstraction over the storage backend (local filesystem or GCS bucket) that Cortex reads bundles from.
+An abstraction over a bundle's storage backend that Cortex reads from. One instance per bundle; currently backed by the local filesystem.
 _Avoid_: storage backend, file system
 
 **Ingest**:
-The process of walking a directory of `.md` files, parsing OKF frontmatter, embedding concept bodies into Chroma, and regenerating `index.md` files. Triggered explicitly by the user.
+The process of walking a directory of `.md` files, parsing OKF frontmatter, embedding concept bodies into Chroma, and regenerating `index.md` files. Triggered explicitly by the user, scoped to all bundles, one bundle, or a bundle sub-path.
 _Avoid_: index, sync, refresh
 
 **Embedding provider**:
 An abstraction over the service that generates vector embeddings for concept bodies. Config-switchable: sentence-transformers (local), ollama, or Vertex AI.
 _Avoid_: embedding model, vectorizer
 
-**Bundle root**:
-The top-level directory of the OKF bundle that a Cortex instance serves. Configured at startup; `POST /ingest` rescans sub-paths within it.
+**Bundles root**:
+The directory whose top-level subdirectories are each a bundle, named by folder. Configured at startup; `POST /ingest` rescans all bundles, or one bundle (and optionally a sub-path) by name. New bundles are auto-discovered on ingest.
 _Avoid_: bundle path, mount point
 
 **Search modes**:

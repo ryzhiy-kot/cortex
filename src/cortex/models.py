@@ -5,6 +5,10 @@ from pydantic import BaseModel, Field
 
 
 class IngestRequest(BaseModel):
+    bundle: str | None = Field(
+        default=None,
+        description="Bundle name to rescan. Defaults to all bundles.",
+    )
     path: str | None = Field(
         default=None,
         description="Bundle-relative directory to rescan. Defaults to the bundle root.",
@@ -34,11 +38,13 @@ class SearchRequest(BaseModel):
     query: str
     mode: SearchMode = SearchMode.HYBRID
     top_k: int = Field(default=10, ge=1, le=100)
+    bundle: str | None = None
     type: str | None = None
     tags: list[str] | None = None
 
 
 class SearchResult(BaseModel):
+    bundle: str = ""
     concept_path: str
     type: str
     title: str | None = None

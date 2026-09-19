@@ -20,8 +20,7 @@ class ParsedConcept:
 
 
 def concept_path_from(rel_path: str) -> str:
-    if rel_path.endswith(".md"):
-        rel_path = rel_path[: -len(".md")]
+    rel_path = rel_path.removesuffix(".md")
     return rel_path
 
 

@@ -11,16 +11,13 @@ class EmbeddingProviderKind(str, Enum):
     VERTEX = "vertex"
 
 
-class BundleStoreKind(str, Enum):
-    LOCAL = "local"
-    GCS = "gcs"
-
-
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CORTEX_", env_file=".env", extra="ignore")
 
-    bundle_root: Path = Field(default=Path("bundle"), description="Bundle root on the local filesystem.")
-    bundle_store: BundleStoreKind = BundleStoreKind.LOCAL
+    bundles_root: Path = Field(
+        default=Path("bundles"),
+        description="Directory whose immediate subdirectories are bundles, named by folder.",
+    )
 
     chroma_path: Path = Path(".cortex/chroma")
     chroma_collection: str = "concepts"
@@ -31,6 +28,3 @@ class Settings(BaseSettings):
     vertex_project: str | None = None
     vertex_location: str = "us-central1"
     vertex_embedding_model: str = "text-embedding-005"
-
-    gcs_bucket: str | None = None
-    gcs_prefix: str = ""
