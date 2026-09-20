@@ -23,6 +23,8 @@ def bundles_root(tmp_path: Path) -> Path:
 
     dest = tmp_path / "bundles"
     shutil.copytree(BUNDLES_ROOT, dest)
+    for generated in dest.rglob("index.md"):
+        generated.unlink()
     return dest
 
 

@@ -16,12 +16,60 @@ systems to query, navigate, and ingest knowledge.
 
 ```bash
 uv sync --extra embeddings
+cp .env.example .env
+uv run cortex
+```
+
+This serves the example bundles. Hit the API on `http://localhost:8000`, browse
+the interactive docs at `http://localhost:8000/docs`, or read the raw schema at
+`http://localhost:8000/openapi.json`.
+
+### Configuration with .env
+
+`cortex/settings.py` reads every setting from an optional `.env` file (all
+variables are prefixed `CORTEX_`; `uv run cortex` looks for `.env` in the
+current directory). Start from the committed template:
+
+```bash
+cp .env.example .env
+```
+
+Then open `.env` and point `CORTEX_BUNDLES_ROOT` at the folder containing your
+bundles — the default `bundles` works if you put your `.md` files there.
+Everything in `.env` is optional; the example file lists every variable with
+its default and what it does. `.env` is git-ignored (secrets like a Vertex
+service account stay out of version control).
+
+Alternatively, set any variable inline and skip `.env` entirely:
+
+```bash
 CORTEX_BUNDLES_ROOT=examples/bundles uv run cortex
 ```
 
-This serves two example bundles, `retail` and `platform`. Hit the API on
-`http://localhost:8000`, or browse the interactive docs at
-`http://localhost:8000/docs`.
+### Serving the example bundles
+
+To try Cortex against the shipped demo bundles instead of a custom `bundles`
+directory, run:
+
+```bash
+CORTEX_BUNDLES_ROOT=examples/bundles uv run cortex
+```
+
+Two bundles, `retail` and `platform`, are served. The first
+`POST /ingest` (see the docs at `/docs`) embeds the concepts and generates the
+`index.md` listings.
+
+### Development server
+
+For hot reload during development, use the FastAPI CLI (requires the dev
+group — `uv sync --group dev`):
+
+```bash
+fastapi dev
+```
+
+`pyproject.toml` declares `cortex.api.app:app` as the entrypoint, so no file
+path is needed. `uv run cortex` stays the production-style runner.
 
 ## API
 

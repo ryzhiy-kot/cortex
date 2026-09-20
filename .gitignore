@@ -9,6 +9,9 @@ wheels/
 # Virtual environments
 .venv
 
+# Local server configuration (secrets live here; see .env.example)
+.env
+
 # Chroma/vector store persistence
 .cortex/
 

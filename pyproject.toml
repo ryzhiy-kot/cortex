@@ -23,6 +23,7 @@ embeddings = [
 
 [dependency-groups]
 dev = [
+    "fastapi[standard]>=0.141.1",
     "pytest>=8.0.0",
     "ruff>=0.8.0",
 ]
