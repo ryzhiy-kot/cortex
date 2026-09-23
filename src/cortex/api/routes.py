@@ -1,6 +1,16 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Request
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Path,
+    Request,
+    UploadFile,
+)
 
 from cortex.context import Cortex
 from cortex.models import (
@@ -8,9 +18,11 @@ from cortex.models import (
     IngestRequest,
     IngestResponse,
     ListingResponse,
+    PrepareJob,
     SearchRequest,
     SearchResult,
 )
+from cortex.prepare.pipeline import SAFE_BUNDLE_RE
 
 router = APIRouter()
 
@@ -78,7 +90,9 @@ def ingest(
     response_model=list[SearchResult],
     summary="Search for concept pointers",
     tags=["search"],
-    responses={400: {"description": "Search failed (e.g. embedding provider unreachable)."}},
+    responses={
+        400: {"description": "Search failed (e.g. embedding provider unreachable)."}
+    },
 )
 def search(
     body: Annotated[
@@ -91,11 +105,18 @@ def search(
                 },
                 "Vector search within one bundle": {
                     "summary": "Semantic search narrowed to a single bundle.",
-                    "value": {"query": "where are compute regions deployed", "bundle": "platform"},
+                    "value": {
+                        "query": "where are compute regions deployed",
+                        "bundle": "platform",
+                    },
                 },
                 "Lexical search by type": {
                     "summary": "Grep-like term match filtered by frontmatter type.",
-                    "value": {"query": "orders", "mode": "lexical", "type": "reference"},
+                    "value": {
+                        "query": "orders",
+                        "mode": "lexical",
+                        "type": "reference",
+                    },
                 },
             }
         ),
@@ -184,7 +205,10 @@ def list_dir(
         Path(
             description="Bundle-qualified directory path (first segment names the bundle).",
             openapi_examples={
-                "Bundle root": {"summary": "List a bundle's top level.", "value": "retail"},
+                "Bundle root": {
+                    "summary": "List a bundle's top level.",
+                    "value": "retail",
+                },
                 "Nested directory": {
                     "summary": "List a subdirectory within a bundle.",
                     "value": "retail/tables",
@@ -214,3 +238,90 @@ def _resolve_store(cortex: Cortex, qualified_path: str) -> tuple:
     if store is None:
         raise FileNotFoundError(f"unknown bundle: {bundle}")
     return store, rest
+
+
+@router.post(
+    "/prepare",
+    response_model=PrepareJob,
+    status_code=202,
+    summary="Convert uploaded source material into OKF concepts",
+    tags=["prepare"],
+    responses={
+        400: {
+            "description": "Both a file and a zip were sent, or the upload was missing."
+        }
+    },
+)
+async def prepare(
+    source: Annotated[
+        UploadFile,
+        File(
+            description="Source material: one non-OKF file (`.md`/`.txt`) or one `.zip`."
+        ),
+    ],
+    bundle: Annotated[
+        str | None,
+        Form(
+            description="Target bundle name. Defaults to a name the review LLM picks.",
+            openapi_examples="retail",
+        ),
+    ] = None,
+    cortex: CortexDep = None,
+) -> PrepareJob:
+    """Queue a Prepare job: an LLM reviews the uploaded source (single file or
+    zip) against the current bundles and turns it into OKF concept files under
+    the bundles root.
+
+    Review decides per source file whether to `create` a new concept or
+    `consolidate` into an existing one (in-place rewrite that preserves the
+    concept path and appends to its `sources` frontmatter). Concept files are
+    validated and written atomically — any invalid output fails the whole job
+    and nothing is written. Non-text files (anything that is not `.md`/`.txt`)
+    are skipped, never fatal.
+
+    Prepare writes OKF only: it does not embed anything or regenerate
+    `index.md`. Run `POST /ingest` afterwards to index what Prepare produced.
+    Jobs run serialized, one at a time; poll `GET /prepare/{job_id}`.
+
+    The result is the job object: status (`queued|reviewing|authoring|done|
+    failed`), which concepts were created or updated in place, and which source
+    files were skipped.
+    """
+    if bundle is not None and SAFE_BUNDLE_RE.match(bundle) is None:
+        raise HTTPException(
+            status_code=400,
+            detail="bundle must start with a letter or digit and contain only [A-Za-z0-9._-]",
+        )
+    payload = await source.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="empty upload")
+    return cortex.prepare.submit(
+        payload=payload,
+        filename=source.filename or "upload",
+        bundle=bundle,
+    )
+
+
+@router.get(
+    "/prepare/{job_id}",
+    response_model=PrepareJob,
+    summary="Poll a Prepare job",
+    tags=["prepare"],
+    responses={404: {"description": "Unknown job id (jobs live in memory only)."}},
+)
+def prepare_job(
+    job_id: Annotated[
+        str,
+        Path(
+            description="Job id returned by POST /prepare.", openapi_examples="a1b2c3"
+        ),
+    ],
+    cortex: CortexDep,
+) -> PrepareJob:
+    """Return a Prepare job in its current state. Poll until status is `done`
+    or `failed`. Jobs are held in memory and do not survive a restart.
+    """
+    job = cortex.prepare.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"unknown prepare job: {job_id}")
+    return job

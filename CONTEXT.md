@@ -25,7 +25,7 @@ A reserved OKF file that enumerates directory contents for progressive disclosur
 _Avoid_: table of contents, listing
 
 **Knowledge service**:
-Cortex's architectural role: provides search, read, list, ingest, and validate endpoints. No LLM agent inside.
+Cortex's architectural role: provides search, read, list, ingest, prepare, and validate endpoints. No LLM in the serving path (search/read); an LLM is used strictly as an authoring utility inside Prepare.
 _Avoid_: agent, orchestrator
 
 **BundleStore**:
@@ -35,6 +35,18 @@ _Avoid_: storage backend, file system
 **Ingest**:
 The process of walking a directory of `.md` files, parsing OKF frontmatter, embedding concept bodies into Chroma, and regenerating `index.md` files. Triggered explicitly by the user, scoped to all bundles, one bundle, or a bundle sub-path.
 _Avoid_: index, sync, refresh
+
+**Source material**:
+Raw input given to Cortex for formatting into OKF: a single file or a zip archive. Not OKF yet, so not yet a bundle or concepts.
+_Avoid_: bundle, document, upload
+
+**Prepare**:
+The process of converting source material into OKF concepts under the bundles root. An LLM reviews the source against existing bundles and decides per source file whether to create a new concept, consolidate into an existing one (in-place rewrite extending its `sources`), or spin up a new bundle. Writes OKF only — no Chroma embedding, no `index.md`; a separate Ingest indexes it. Runs asynchronously, one job at a time, and is atomic: any invalid output fails the whole job.
+_Avoid_: ingest, import, injection
+
+**Sources**:
+The frontmatter field on prepared concepts recording which source material they were produced from. Preserved and appended on consolidation.
+_Avoid_: provenance, origin (as a field name)
 
 **Embedding provider**:
 An abstraction over the service that generates vector embeddings for concept bodies. Config-switchable: sentence-transformers (local), ollama, or Vertex AI.

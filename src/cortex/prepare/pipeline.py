@@ -1,0 +1,418 @@
+import json
+import re
+import shutil
+import zipfile
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+import yaml
+
+from cortex.bundle.local import RESERVED
+from cortex.bundle.parser import ParsedConcept, ParseError, parse_concept
+from cortex.models import PrepareError, PrepareJob, PrepareStatus
+from cortex.prepare.llm import LLMProvider
+
+SUPPORTED_SUFFIXES = {".md", ".txt"}
+SAFE_BUNDLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+class ReviewPlanError(ValueError):
+    pass
+
+
+class PrepareFailure(Exception):
+    def __init__(self, item: str, reason: str) -> None:
+        super().__init__(f"{item}: {reason}")
+        self.item = item
+        self.reason = reason
+
+
+@dataclass
+class PendingWrite:
+    parsed: ParsedConcept
+    action: str
+    into: str | None
+    additions: list[str]
+    create_rel: str = ""
+
+
+def _load_spec() -> str:
+    here = Path(__file__).resolve()
+    candidates = [here.parent / "SPEC.md"]
+    candidates += [here.parents[i] / "lib" / "okf" / "SPEC.md" for i in range(3, 6)]
+    candidates.append(Path.cwd() / "lib" / "okf" / "SPEC.md")
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate.read_text(encoding="utf-8")
+        except OSError:
+            continue
+    return ""
+
+
+def _extract_json(text: str) -> dict:
+    text = text.strip()
+    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1).strip()
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ReviewPlanError(f"LLM returned no JSON object:\n{text[:300]}")
+    try:
+        parsed = json.loads(text[start : end + 1])
+    except json.JSONDecodeError as exc:
+        raise ReviewPlanError(f"LLM returned unparseable JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ReviewPlanError("LLM review plan must be a JSON object")
+    return parsed
+
+
+def _strip_markdown_fence(text: str) -> str:
+    text = text.strip()
+    fence = re.search(r"```(?:markdown|md|text)?\s*(.*?)```", text, re.DOTALL)
+    if fence:
+        return fence.group(1).strip()
+    return text
+
+
+def _render_concept(frontmatter: dict, body: str) -> str:
+    header = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).strip()
+    return f"---\n{header}\n---\n\n{body}\n" if body else f"---\n{header}\n---\n"
+
+
+def _safe_member(target_root: Path, member: str) -> Path:
+    target = (target_root / member).resolve()
+    if not str(target).startswith(str(target_root.resolve())):
+        raise PrepareFailure(member, "zip member escapes staging directory")
+    return target
+
+
+def _extract_zip(zip_path: Path, staging: Path) -> None:
+    try:
+        with zipfile.ZipFile(zip_path) as archive:
+            for info in archive.infolist():
+                target = _safe_member(staging, info.filename)
+                if info.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(info) as src, open(target, "wb") as dst:
+                    dst.write(src.read())
+    except zipfile.BadZipFile as exc:
+        raise PrepareFailure(
+            zip_path.name, f"not a readable zip archive: {exc}"
+        ) from exc
+
+
+def _staged_files(staging: Path) -> list[str]:
+    root = staging.resolve()
+    return [
+        str(path.relative_to(root))
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    ]
+
+
+def _source_label(job: PrepareJob, source_name: str) -> str:
+    return f"{job.source}:{source_name}" if job.source != source_name else source_name
+
+
+class PrepareRunner:
+    def __init__(
+        self,
+        llm: LLMProvider,
+        bundles_root: Path,
+        staging_root: Path,
+        manifest_factory: Callable[[], list[dict]],
+    ) -> None:
+        self._llm = llm
+        self._bundles_root = bundles_root
+        self._staging_root = staging_root
+        self._manifest_factory = manifest_factory
+        self._spec = _load_spec()
+
+    def run(
+        self, job: PrepareJob, payload: bytes, filename: str, forced_bundle: str | None
+    ) -> None:
+        filename = Path(filename).name
+        job.source = filename
+        staging = self._staging_root / job.job_id
+        try:
+            staging.mkdir(parents=True, exist_ok=True)
+            if filename.lower().endswith(".zip"):
+                zip_path = staging / filename
+                zip_path.write_bytes(payload)
+                content_root = staging / "unpacked"
+                content_root.mkdir(parents=True, exist_ok=True)
+                _extract_zip(zip_path, content_root)
+            else:
+                (staging / filename).write_bytes(payload)
+                content_root = staging
+
+            plan = self._review(job, content_root, forced_bundle)
+            if plan["decisions"]:
+                self._author(job, content_root, plan)
+            job.target_bundle = plan["bundle"]
+            job.status = PrepareStatus.DONE
+        except PrepareFailure as exc:
+            job.status = PrepareStatus.FAILED
+            job.errors = [PrepareError(item=exc.item, reason=exc.reason)]
+        except Exception as exc:  # noqa: BLE001 - job failure is reported, not raised
+            job.status = PrepareStatus.FAILED
+            job.errors = [PrepareError(item=filename, reason=str(exc))]
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+
+    def _review(
+        self, job: PrepareJob, content_root: Path, forced_bundle: str | None
+    ) -> dict:
+        job.status = PrepareStatus.REVIEWING
+        manifest = self._manifest_factory()
+        files = _staged_files(content_root)
+        supported = [f for f in files if Path(f).suffix.lower() in SUPPORTED_SUFFIXES]
+        job.skipped_files = [f for f in files if f not in supported]
+        if not supported:
+            return {"bundle": forced_bundle, "decisions": {}}
+
+        prompt = {
+            "task": "REVIEW",
+            "forced_bundle": forced_bundle,
+            "files": supported,
+            "bundles": manifest,
+        }
+        response = self._llm.complete(
+            system=_REVIEW_SYSTEM.format(spec=self._spec),
+            user=json.dumps(prompt, indent=2),
+        )
+        plan = _extract_json(response)
+        return self._validate_plan(plan, forced_bundle, supported, manifest)
+
+    def _validate_plan(
+        self,
+        plan: dict,
+        forced_bundle: str | None,
+        supported: list[str],
+        manifest: list[dict],
+    ) -> dict:
+        existing = {item["concept_path"] for item in manifest}
+        bundle = forced_bundle if forced_bundle is not None else plan.get("bundle")
+        if bundle is None or SAFE_BUNDLE_RE.match(bundle) is None:
+            raise ReviewPlanError(
+                f"LLM did not choose a valid bundle name (got: {bundle!r})"
+            )
+        decisions = plan.get("decisions") or {}
+        if not isinstance(decisions, dict):
+            raise ReviewPlanError("review plan 'decisions' must be a JSON object")
+        allowed = set(supported)
+        for source_name, decision in decisions.items():
+            if source_name not in allowed:
+                raise ReviewPlanError(
+                    f"review names unknown source file: {source_name}"
+                )
+            if not isinstance(decision, dict):
+                raise ReviewPlanError(f"decision for {source_name} must be an object")
+            action = decision.get("action")
+            if action not in ("create", "consolidate"):
+                raise ReviewPlanError(
+                    f"decision for {source_name} must be 'create' or 'consolidate'"
+                )
+            into = (decision.get("into") or "").strip().removesuffix(".md")
+            if action == "consolidate":
+                if not into or into not in existing:
+                    raise ReviewPlanError(
+                        f"decision for {source_name} consolidates into unknown concept: {into}"
+                    )
+                decision["into"] = into
+            allowed.discard(source_name)
+        if allowed:
+            raise ReviewPlanError(f"review omitted decisions for: {sorted(allowed)}")
+        return {"bundle": bundle, "decisions": decisions}
+
+    def _author(self, job: PrepareJob, content_root: Path, plan: dict) -> None:
+        job.status = PrepareStatus.AUTHORING
+        bundle = plan["bundle"]
+        pending: list[PendingWrite] = []
+        for source_name, decision in plan["decisions"].items():
+            content = (content_root / source_name).read_text(
+                encoding="utf-8", errors="replace"
+            )
+            existing = (
+                self._read_existing(decision["into"])
+                if decision["action"] == "consolidate"
+                else None
+            )
+            prompt = {
+                "task": "AUTHOR",
+                "source": source_name,
+                "content": content,
+                "decision": decision,
+                "existing_concept": existing,
+            }
+            response = self._llm.complete(
+                system=_AUTHOR_SYSTEM.format(spec=self._spec),
+                user=json.dumps(prompt, indent=2),
+            )
+            raw = _strip_markdown_fence(response)
+            try:
+                parsed = parse_concept(raw, source_name)
+            except ParseError as exc:
+                raise PrepareFailure(
+                    source_name, f"LLM authored invalid OKF: {exc}"
+                ) from exc
+            label = _source_label(job, source_name)
+            if decision["action"] == "consolidate":
+                existing_sources = self._existing_sources(existing)
+                additions = (
+                    existing_sources + [label]
+                    if label not in existing_sources
+                    else existing_sources
+                )
+            else:
+                additions = [label]
+            pending.append(
+                PendingWrite(
+                    parsed=parsed,
+                    action=decision["action"],
+                    into=decision.get("into"),
+                    additions=additions,
+                    create_rel=Path(source_name).with_suffix("").as_posix(),
+                )
+            )
+        self._persist(job, bundle, pending)
+
+    @staticmethod
+    def _existing_sources(existing: dict | None) -> list[str]:
+        if existing is None:
+            return []
+        raw = existing.get("frontmatter", {}).get("sources", [])
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            return []
+        return [str(item) for item in raw]
+
+    def _read_existing(self, concept_path: str) -> dict | None:
+        bundle, _, rel = concept_path.partition("/")
+        try:
+            text = (self._bundles_root / bundle / f"{rel}.md").read_text(
+                encoding="utf-8"
+            )
+        except FileNotFoundError, NotADirectoryError:
+            return None
+        try:
+            parsed = parse_concept(text, concept_path)
+        except ParseError:
+            return None
+        return {"frontmatter": parsed.frontmatter, "body": parsed.body}
+
+    def _persist(
+        self, job: PrepareJob, bundle: str, pending: list[PendingWrite]
+    ) -> None:
+        root = self._bundles_root.resolve()
+        planned: list[tuple[Path, str, PendingWrite]] = []
+        for write in pending:
+            if write.action == "consolidate":
+                into_bundle, _, into_rel = write.into.partition("/")
+                target = (root / into_bundle / f"{into_rel}.md").resolve()
+                if not str(target).startswith(str(root)):
+                    raise PrepareFailure(
+                        write.into, "consolidation target escapes bundles root"
+                    )
+            else:
+                rel = write.create_rel
+                if f"{rel}.md".split("/")[-1] in RESERVED:
+                    raise PrepareFailure(
+                        write.parsed.path,
+                        "concept name collides with a reserved OKF file",
+                    )
+                bundle_root = (root / bundle).resolve()
+                if not str(bundle_root).startswith(str(root)):
+                    raise PrepareFailure(bundle, "bundle name escapes bundles root")
+                target = (bundle_root / f"{rel}.md").resolve()
+                if not str(target).startswith(str(bundle_root)):
+                    raise PrepareFailure(
+                        write.parsed.path, "concept path escapes target bundle"
+                    )
+            frontmatter = dict(write.parsed.frontmatter)
+            frontmatter["sources"] = write.additions
+            planned.append(
+                (target, _render_concept(frontmatter, write.parsed.body), write)
+            )
+
+        backups: dict[Path, bytes | None] = {}
+        created_dirs: list[Path] = []
+        try:
+            for target, content, write in planned:
+                backups[target] = target.read_bytes() if target.exists() else None
+                parent = target.parent
+                new_dirs = []
+                probe = parent
+                while not probe.exists() and probe != root:
+                    new_dirs.append(probe)
+                    probe = probe.parent
+                for new_dir in reversed(new_dirs):
+                    new_dir.mkdir(exist_ok=True)
+                    created_dirs.append(new_dir)
+                target.write_text(content, encoding="utf-8")
+                if write.action == "consolidate":
+                    job.updated_concepts.append(write.into)
+                else:
+                    job.created_concepts.append(f"{bundle}/{write.create_rel}")
+        except Exception as exc:
+            for target, original in backups.items():
+                if original is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    target.write_bytes(original)
+            for new_dir in sorted(
+                created_dirs, key=lambda path: len(path.parts), reverse=True
+            ):
+                try:
+                    new_dir.rmdir()
+                except OSError:
+                    pass
+            raise PrepareFailure(
+                job.source, f"failed to write prepared concepts: {exc}"
+            ) from exc
+
+
+_REVIEW_SYSTEM = """You are the authoring utility inside Cortex, a knowledge service built on this specification:
+
+{spec}
+
+Given source material that is NOT yet OKF, decide per source file whether its knowledge already
+exists among the current bundles.
+
+Return ONLY a JSON object, no prose:
+{{
+  "bundle": "the bundle the new concepts should live in; reuse an existing bundle name when
+            suitable, otherwise a new concise name",
+  "decisions": {{
+    "<source file name>": {{
+      "action": "create" or "consolidate",
+      "into": "only for consolidate: the bundle-qualified concept path it merges into",
+      "reason": "one short sentence"
+    }}
+  }}
+}}
+
+- If a source file duplicates or extends knowledge already in a concept, choose "consolidate"
+  and name the existing concept path in "into".
+- Distinct new knowledge gets "create".
+- Every source file listed in the prompt must appear in "decisions".
+"""
+
+_AUTHOR_SYSTEM = """You are the authoring utility inside Cortex, a knowledge service built on this specification:
+
+{spec}
+
+Produce ONE concept file in valid OKF: markdown with YAML frontmatter. Frontmatter MUST include:
+- "type": a short, self-explanatory value (e.g. reference, guide, playbook)
+- "title": concise title
+- "description": one-sentence summary
+
+Then a markdown body. If "existing_concept" is provided, merge the new content into it and return
+the full merged concept; do not drop the existing body. Do not include a "sources" field.
+Return ONLY the concept file content, no explanations.
+"""

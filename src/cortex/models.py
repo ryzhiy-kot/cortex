@@ -30,7 +30,9 @@ class IngestError(BaseModel):
 
 class IngestResponse(BaseModel):
     indexed: int = Field(0, description="Concepts newly added to the index.")
-    updated: int = Field(0, description="Concepts re-embedded because their file changed.")
+    updated: int = Field(
+        0, description="Concepts re-embedded because their file changed."
+    )
     deleted: int = Field(
         0, description="Concepts removed from the index since the last ingest."
     )
@@ -81,8 +83,12 @@ class SearchResult(BaseModel):
     )
     type: str = Field(..., description="The concept's frontmatter `type`.")
     title: str | None = Field(default=None, description="Frontmatter title, if any.")
-    description: str | None = Field(default=None, description="Frontmatter description, if any.")
-    snippet: str = Field("", description="Leading text of the concept body for context.")
+    description: str | None = Field(
+        default=None, description="Frontmatter description, if any."
+    )
+    snippet: str = Field(
+        "", description="Leading text of the concept body for context."
+    )
     score: float = Field(0.0, ge=0.0, le=1.0, description="Match score, 0-1.")
 
 
@@ -103,7 +109,8 @@ class ConceptResponse(BaseModel):
 
 class ConceptCard(BaseModel):
     concept_path: str = Field(
-        ..., description="Bundle-qualified path of the concept.",
+        ...,
+        description="Bundle-qualified path of the concept.",
         examples=["retail/tables/orders"],
     )
     type: str = Field(..., description="The concept's frontmatter `type`.")
@@ -113,11 +120,50 @@ class ConceptCard(BaseModel):
 
 class ListingResponse(BaseModel):
     dir: str = Field(
-        ..., description="Bundle-qualified directory being listed.",
+        ...,
+        description="Bundle-qualified directory being listed.",
         examples=["retail/tables"],
     )
     subdirs: list[str] = Field(..., description="Immediate subdirectories.")
     concepts: list[ConceptCard] = Field(..., description="Concepts in this directory.")
     index_content: str | None = Field(
         default=None, description="Generated index.md content for the directory."
+    )
+
+
+class PrepareStatus(str, Enum):
+    QUEUED = "queued"
+    REVIEWING = "reviewing"
+    AUTHORING = "authoring"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class PrepareError(BaseModel):
+    item: str
+    reason: str
+
+
+class PrepareJob(BaseModel):
+    job_id: str = Field(
+        ..., description="Job identifier for polling.", examples=["a1b2c3"]
+    )
+    status: PrepareStatus = PrepareStatus.QUEUED
+    source: str = Field("", description="Uploaded source filename.")
+    target_bundle: str | None = Field(
+        default=None, description="Bundle the prepared concepts landed in."
+    )
+    created_concepts: list[str] = Field(
+        default_factory=list, description="Concept paths written as new concepts."
+    )
+    updated_concepts: list[str] = Field(
+        default_factory=list,
+        description="Existing concept paths consolidated in place by the review.",
+    )
+    skipped_files: list[str] = Field(
+        default_factory=list, description="Source files that were not converted."
+    )
+    errors: list[PrepareError] = Field(
+        default_factory=list,
+        description="Failures; a prepare is atomic, so non-empty implies status=failed.",
     )

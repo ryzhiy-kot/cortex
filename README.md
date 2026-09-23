@@ -11,6 +11,8 @@ systems to query, navigate, and ingest knowledge.
   from the bundle so answers stay grounded in source markdown.
 - Config-switchable embedding providers: sentence-transformers (default), ollama,
   Vertex AI.
+- **Prepare**: an LLM authoring utility turns uploaded source material (a file or
+  a zip) into new or consolidated OKF concepts; search and read never touch an LLM.
 
 ## Quick start
 
@@ -206,8 +208,14 @@ All settings come from environment variables prefixed with `CORTEX_`
 | `CORTEX_VERTEX_PROJECT`     | —                          | GCP project for Vertex AI.           |
 | `CORTEX_VERTEX_LOCATION`    | `us-central1`              | Vertex AI region.                    |
 | `CORTEX_VERTEX_EMBEDDING_MODEL` | `text-embedding-005`   | Vertex embedding model.              |
+| `CORTEX_STAGING_PATH`       | `.cortex/staging`          | Staging dir for uploaded source material. |
+| `CORTEX_LLM_PROVIDER`       | `ollama`                   | Prepare's LLM utility: `ollama` or `vertex`. |
+| `CORTEX_OLLAMA_LLM_MODEL`   | `llama3.2`                 | Ollama LLM model for Prepare.        |
+| `CORTEX_VERTEX_LLM_MODEL`   | `gemini-2.0-flash-001`     | Vertex LLM model for Prepare.        |
 
 The `ollama` and `vertex` providers live behind `uv sync --extra embeddings`.
+Prepare writes OKF only: it embeds nothing. Run `POST /ingest` after `POST
+/prepare` to index what the LLM authored.
 
 ## Development
 
