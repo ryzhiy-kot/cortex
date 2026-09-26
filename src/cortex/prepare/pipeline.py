@@ -5,8 +5,10 @@ import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import yaml
+from pydantic import BaseModel, ValidationError
 
 from cortex.bundle.local import RESERVED
 from cortex.bundle.parser import ParsedConcept, ParseError, parse_concept
@@ -15,6 +17,17 @@ from cortex.prepare.llm import LLMProvider
 from cortex.telemetry import logger, tracer
 
 SAFE_BUNDLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+class ReviewDecision(BaseModel):
+    action: Literal["create", "consolidate"]
+    into: str | None = None
+    reason: str
+
+
+class ReviewPlan(BaseModel):
+    bundle: str | None = None
+    decisions: dict[str, ReviewDecision] = {}
 
 
 def _is_text(path: Path) -> bool:
@@ -69,23 +82,6 @@ def _load_spec() -> str:
         except OSError:
             continue
     return ""
-
-
-def _extract_json(text: str) -> dict:
-    text = text.strip()
-    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-    if fence:
-        text = fence.group(1).strip()
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        raise ReviewPlanError(f"LLM returned no JSON object:\n{text[:300]}")
-    try:
-        parsed = json.loads(text[start : end + 1])
-    except json.JSONDecodeError as exc:
-        raise ReviewPlanError(f"LLM returned unparseable JSON: {exc}") from exc
-    if not isinstance(parsed, dict):
-        raise ReviewPlanError("LLM review plan must be a JSON object")
-    return parsed
 
 
 def _strip_markdown_fence(text: str) -> str:
@@ -171,9 +167,9 @@ class PrepareRunner:
                 content_root = staging
 
             plan = self._review(job, content_root, forced_bundle)
-            if plan["decisions"]:
+            if plan.decisions:
                 self._author(job, content_root, plan)
-            job.target_bundle = plan["bundle"]
+            job.target_bundle = plan.bundle
             job.status = PrepareStatus.DONE
         except PrepareFailure as exc:
             job.status = PrepareStatus.FAILED
@@ -193,7 +189,7 @@ class PrepareRunner:
         supported = [f for f in files if _is_text(content_root / f)]
         job.skipped_files = [f for f in files if f not in supported]
         if not supported:
-            return {"bundle": forced_bundle, "decisions": {}}
+            return ReviewPlan(bundle=forced_bundle, decisions={})
 
         with tracer().start_as_current_span("prepare.review") as span:
             span.set_attribute("cortex.files", len(supported))
@@ -204,86 +200,84 @@ class PrepareRunner:
                 "files": supported,
                 "bundles": manifest,
             }
-            response = self._llm.complete(
-                system=_REVIEW_SYSTEM.format(spec=self._spec),
-                user=json.dumps(prompt, indent=2),
-            )
-            plan = _extract_json(response)
-            validated = self._validate_plan(plan, forced_bundle, supported, manifest)
-            span.set_attribute("cortex.decisions", len(validated["decisions"]))
-            span.set_attribute("cortex.bundle", validated["bundle"])
-            return validated
+            try:
+                response = self._llm.complete(
+                    system=_REVIEW_SYSTEM.format(spec=self._spec),
+                    user=json.dumps(prompt, indent=2),
+                    output_type=ReviewPlan,
+                )
+            except ValidationError as exc:
+                raise ReviewPlanError(
+                    f"LLM returned an invalid review plan: {exc.errors()[0]['msg']}"
+                ) from exc
+            plan = self._validate_plan(response, forced_bundle, supported, manifest)
+            span.set_attribute("cortex.decisions", len(plan.decisions))
+            span.set_attribute("cortex.bundle", plan.bundle or "")
+            return plan
 
     def _validate_plan(
         self,
-        plan: dict,
+        plan: ReviewPlan,
         forced_bundle: str | None,
         supported: list[str],
         manifest: list[dict],
-    ) -> dict:
+    ) -> ReviewPlan:
         existing = {item["concept_path"] for item in manifest}
-        bundle = forced_bundle if forced_bundle is not None else plan.get("bundle")
+        bundle = forced_bundle if forced_bundle is not None else plan.bundle
         if bundle is None or SAFE_BUNDLE_RE.match(bundle) is None:
             raise ReviewPlanError(
                 f"LLM did not choose a valid bundle name (got: {bundle!r})"
             )
-        decisions = plan.get("decisions") or {}
-        if not isinstance(decisions, dict):
-            raise ReviewPlanError("review plan 'decisions' must be a JSON object")
         allowed = set(supported)
-        for source_name, decision in decisions.items():
+        decisions: dict[str, ReviewDecision] = {}
+        for source_name, decision in plan.decisions.items():
             if source_name not in allowed:
                 raise ReviewPlanError(
                     f"review names unknown source file: {source_name}"
                 )
-            if not isinstance(decision, dict):
-                raise ReviewPlanError(f"decision for {source_name} must be an object")
-            action = decision.get("action")
-            if action not in ("create", "consolidate"):
-                raise ReviewPlanError(
-                    f"decision for {source_name} must be 'create' or 'consolidate'"
-                )
-            into = (decision.get("into") or "").strip().removesuffix(".md")
-            if action == "consolidate":
+            if decision.action == "consolidate":
+                into = (decision.into or "").strip().removesuffix(".md")
                 if not into or into not in existing:
                     raise ReviewPlanError(
-                        f"decision for {source_name} consolidates into unknown concept: {into}"
+                        f"decision for {source_name} consolidates into unknown concept: {decision.into}"
                     )
-                decision["into"] = into
+                decisions[source_name] = decision.model_copy(update={"into": into})
+            else:
+                decisions[source_name] = decision
             allowed.discard(source_name)
         if allowed:
             raise ReviewPlanError(f"review omitted decisions for: {sorted(allowed)}")
-        return {"bundle": bundle, "decisions": decisions}
+        return plan.model_copy(update={"bundle": bundle, "decisions": decisions})
 
-    def _author(self, job: PrepareJob, content_root: Path, plan: dict) -> None:
+    def _author(self, job: PrepareJob, content_root: Path, plan: ReviewPlan) -> None:
         job.status = PrepareStatus.AUTHORING
-        bundle = plan["bundle"]
+        bundle = plan.bundle
         pending: list[PendingWrite] = []
-        for source_name, decision in plan["decisions"].items():
+        for source_name, decision in plan.decisions.items():
             content = (content_root / source_name).read_text(
                 encoding="utf-8-sig", errors="replace"
             )
             existing = (
-                self._read_existing(decision["into"])
-                if decision["action"] == "consolidate"
+                self._read_existing(decision.into)
+                if decision.action == "consolidate"
                 else None
             )
             with tracer().start_as_current_span("prepare.author") as span:
                 span.set_attribute("cortex.source", source_name)
-                span.set_attribute("cortex.action", decision["action"])
-                span.set_attribute("cortex.into", decision.get("into") or "")
+                span.set_attribute("cortex.action", decision.action)
+                span.set_attribute("cortex.into", decision.into or "")
                 prompt = {
                     "task": "AUTHOR",
                     "source": source_name,
                     "content": content,
-                    "decision": decision,
+                    "decision": decision.model_dump(),
                     "existing_concept": existing,
                 }
                 response = self._llm.complete(
                     system=_AUTHOR_SYSTEM.format(spec=self._spec),
                     user=json.dumps(prompt, indent=2),
                 )
-                raw = _strip_markdown_fence(response)
+                raw = _strip_markdown_fence(str(response))
                 try:
                     parsed = parse_concept(raw, source_name)
                 except ParseError as exc:
@@ -291,7 +285,7 @@ class PrepareRunner:
                         source_name, f"LLM authored invalid OKF: {exc}"
                     ) from exc
             label = _source_label(job, source_name)
-            if decision["action"] == "consolidate":
+            if decision.action == "consolidate":
                 existing_sources = self._existing_sources(existing)
                 additions = (
                     existing_sources + [label]
@@ -303,8 +297,8 @@ class PrepareRunner:
             pending.append(
                 PendingWrite(
                     parsed=parsed,
-                    action=decision["action"],
-                    into=decision.get("into"),
+                    action=decision.action,
+                    into=decision.into,
                     additions=additions,
                     create_rel=Path(source_name).with_suffix("").as_posix(),
                 )
@@ -428,23 +422,16 @@ _REVIEW_SYSTEM = """You are the authoring utility inside Cortex, a knowledge ser
 Given source material that is NOT yet OKF, decide per source file whether its knowledge already
 exists among the current bundles.
 
-Return ONLY a JSON object, no prose:
-{{
-  "bundle": "the bundle the new concepts should live in; reuse an existing bundle name when
-            suitable, otherwise a new concise name",
-  "decisions": {{
-    "<source file name>": {{
-      "action": "create" or "consolidate",
-      "into": "only for consolidate: the bundle-qualified concept path it merges into",
-      "reason": "one short sentence"
-    }}
-  }}
-}}
+You respond in structured form (enforced by the host; you must not add prose):
+- "bundle": the bundle the new concepts should live in; reuse an existing bundle name when
+  suitable, otherwise a new concise name.
+- "decisions": one entry per source file, with:
+  - "action": "create" for distinct new knowledge, or "consolidate" when the file's knowledge
+    duplicates or extends a concept that already exists.
+  - "into": required only for "consolidate" — the bundle-qualified concept path it merges into.
+  - "reason": one short sentence justifying the choice.
 
-- If a source file duplicates or extends knowledge already in a concept, choose "consolidate"
-  and name the existing concept path in "into".
-- Distinct new knowledge gets "create".
-- Every source file listed in the prompt must appear in "decisions".
+Every source file listed in the prompt must appear in "decisions".
 """
 
 _AUTHOR_SYSTEM = """You are the authoring utility inside Cortex, a knowledge service built on this specification:

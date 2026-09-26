@@ -141,7 +141,6 @@ def _coerce(value: Any) -> Any:
 
 _provider: TracerProvider | None = None
 _exporter: JsonlSpanExporter | None = None
-_instrumented = False
 
 
 def setup_logging(log_path: Path, level: str = "info") -> None:
@@ -209,16 +208,6 @@ def task_run(task: str, run_id: str, **attributes):
             raise
         finally:
             span.end()
-
-
-def instrument_ollama() -> None:
-    global _instrumented
-    if _instrumented:
-        return
-    from opentelemetry.instrumentation.ollama import OllamaInstrumentor
-
-    OllamaInstrumentor().instrument()
-    _instrumented = True
 
 
 def prune() -> None:

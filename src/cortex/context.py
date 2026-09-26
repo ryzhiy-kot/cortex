@@ -17,7 +17,6 @@ from cortex.prepare.vertex import VertexLLM
 from cortex.settings import EmbeddingProviderKind, LLMProviderKind, Settings
 from cortex.telemetry import (
     init_tracing,
-    instrument_ollama,
     setup_logging,
     task_run,
     tracer,
@@ -47,8 +46,6 @@ class Cortex:
         self.bundles: dict[str, LocalBundleStore] = {}
         self._load_bundles()
         llm = llm or _build_llm(settings)
-        if isinstance(llm, OllamaLLM):
-            instrument_ollama()
         runner = PrepareRunner(
             llm=llm,
             bundles_root=settings.bundles_root,

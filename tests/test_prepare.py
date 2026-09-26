@@ -1,4 +1,7 @@
+import json
 from zipfile import ZIP_DEFLATED, ZipFile
+
+from cortex.prepare.pipeline import ReviewPlan
 
 
 def _upload(client, source: bytes, filename: str, bundle: str | None = None):
@@ -213,6 +216,42 @@ def test_prepare_invalid_bundle_name_rejected(client):
 
 def test_prepare_job_poll_unknown_id_404(client):
     assert client.get("/prepare/nope").status_code == 404
+
+
+def test_prepare_invalid_review_plan_fails_cleanly(client, cortex, stub_llm):
+    def prose_review(prompt):
+        return "Based on the provided context, here is a review of the task..."
+
+    stub_llm.review_plan = prose_review
+
+    response = _upload(client, b"# New\n\nBody.", "new.md", bundle="retail")
+
+    assert response.status_code == 202
+    job = response.json()
+    assert job["status"] == "failed"
+    assert "invalid review plan" in job["errors"][0]["reason"]
+    assert not (cortex._bundles_root / "retail" / "new.md").exists()
+
+
+def test_prepare_review_uses_structured_output(client, cortex, stub_llm):
+    original = stub_llm.complete
+    output_types: list[type[ReviewPlan] | None] = []
+
+    def spying(
+        system: str, user: str, output_type: type[ReviewPlan] | None = None
+    ) -> str | ReviewPlan:
+        prompt = json.loads(user)
+        if prompt["task"] == "REVIEW":
+            output_types.append(output_type)
+        return original(system, user, output_type)
+
+    stub_llm.complete = spying
+
+    response = _upload(client, b"# New\n\nBody.", "new.md", bundle="retail")
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "done"
+    assert output_types == [ReviewPlan]
 
 
 def test_prepare_then_ingest_indexes_created_concepts(client, cortex):

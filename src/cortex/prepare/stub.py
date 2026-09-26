@@ -1,6 +1,7 @@
 import json
 
 import yaml
+from pydantic import BaseModel
 
 from cortex.prepare.llm import LLMProvider
 
@@ -8,8 +9,10 @@ from cortex.prepare.llm import LLMProvider
 class StubLLM(LLMProvider):
     """Scriptable stand-in for the LLM used by tests and offline smoke runs.
 
-    `review_plan(prompt) -> dict` returns the review JSON object; `author(prompt) -> str`
+    `review_plan(prompt) -> dict` returns the review plan; `author(prompt) -> str`
     returns the concept markdown. When not overridden, deterministic defaults apply.
+    A structured `output_type` is fulfilled by validating the callback's dict into
+    that model — the same shape a real provider's structured output takes.
     """
 
     def __init__(
@@ -21,11 +24,19 @@ class StubLLM(LLMProvider):
         self.author = author or self._default_author
         self.calls: list[tuple[str, str]] = []
 
-    def complete(self, system: str, user: str) -> str:
+    def complete(
+        self,
+        system: str,
+        user: str,
+        output_type: type[BaseModel] | None = None,
+    ) -> str | BaseModel:
         self.calls.append((system, user))
         prompt = json.loads(user)
         if prompt["task"] == "REVIEW":
-            return json.dumps(self.review_plan(prompt))
+            plan = self.review_plan(prompt)
+            if output_type is not None:
+                return output_type.model_validate(plan)
+            return plan
         return self.author(prompt)
 
     @staticmethod
