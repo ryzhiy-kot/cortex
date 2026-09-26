@@ -263,7 +263,12 @@ async def prepare(
         str | None,
         Form(
             description="Target bundle name. Defaults to a name the review LLM picks.",
-            openapi_examples="retail",
+            openapi_examples={
+                "Name an existing bundle": {
+                    "summary": "Consolidate into or create under an existing bundle.",
+                    "value": "retail",
+                }
+            },
         ),
     ] = None,
     cortex: CortexDep = None,
@@ -313,7 +318,13 @@ def prepare_job(
     job_id: Annotated[
         str,
         Path(
-            description="Job id returned by POST /prepare.", openapi_examples="a1b2c3"
+            description="Job id returned by POST /prepare.",
+            openapi_examples={
+                "A job id": {
+                    "summary": "As returned by POST /prepare.",
+                    "value": "a1b2c3",
+                }
+            },
         ),
     ],
     cortex: CortexDep,
