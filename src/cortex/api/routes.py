@@ -258,7 +258,7 @@ async def prepare(
     source: Annotated[
         UploadFile,
         File(
-            description="Source material: one non-OKF file (`.md`/`.txt`) or one `.zip`."
+            description="Source material: one text file (any text format — prepare converts it to OKF) or one `.zip`."
         ),
     ],
     bundle: Annotated[
@@ -283,8 +283,8 @@ async def prepare(
     `consolidate` into an existing one (in-place rewrite that preserves the
     concept path and appends to its `sources` frontmatter). Concept files are
     validated and written atomically — any invalid output fails the whole job
-    and nothing is written. Non-text files (anything that is not `.md`/`.txt`)
-    are skipped, never fatal.
+    and nothing is written. Source material is expected in any text format;
+    prepare is what converts it to OKF. Binary files are skipped, never fatal.
 
     Prepare writes OKF only: it does not embed anything or regenerate
     `index.md`. Run `POST /ingest` afterwards to index what Prepare produced.

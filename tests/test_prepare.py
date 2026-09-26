@@ -116,7 +116,7 @@ def test_prepare_reserved_name_fails_without_writing(client, cortex, stub_llm):
     assert not (cortex._bundles_root / "retail" / "index.md").exists()
 
 
-def test_prepare_zip_creates_mirrored_concepts_and_skips_unsupported(client, cortex):
+def test_prepare_zip_creates_mirrored_concepts_and_skips_binary(client, cortex):
     import io
 
     buf = io.BytesIO()
@@ -135,6 +135,54 @@ def test_prepare_zip_creates_mirrored_concepts_and_skips_unsupported(client, cor
     assert "assets/logo.png" in job["skipped_files"]
     assert (cortex._bundles_root / "retail" / "docs" / "a.md").exists()
     assert (cortex._bundles_root / "retail" / "assets" / "logo.png").exists() is False
+
+
+def test_prepare_accepts_any_text_format(client, cortex):
+    source = b"report,amount,note\n1,10,first-row\n2,20,second-row\n"
+    response = _upload(client, source, "data.csv", bundle="retail")
+
+    assert response.status_code == 202
+    job = response.json()
+    assert job["status"] == "done"
+    assert job["created_concepts"] == ["retail/data"]
+    assert job["skipped_files"] == []
+
+    concept = cortex.read_concept("retail/data")
+    assert concept.frontmatter.get("sources") == ["data.csv"]
+    assert "first-row" in concept.body.lower()
+
+
+def test_prepare_accepts_html_and_extensionless_text(client, cortex):
+    html = b"<html><body><h1>Pricing</h1><p>Annual plans only.</p></body></html>"
+
+    response = _upload(client, html, "pricing.html", bundle="retail")
+    assert response.status_code == 202
+    job = response.json()
+    assert job["status"] == "done"
+    assert job["created_concepts"] == ["retail/pricing"]
+
+    plain = b"README: point the CORTEX_BUNDLES_ROOT env at your bundles.\n"
+    response = _upload(client, plain, "README", bundle="retail")
+    assert response.status_code == 202
+    job = response.json()
+    assert job["status"] == "done"
+    assert job["created_concepts"] == ["retail/README"]
+
+
+def test_prepare_single_binary_file_is_skipped(client, cortex):
+    response = _upload(
+        client,
+        b"\x89PNG\r\n\x1a\n" + b"\0" * 64,
+        "photo.png",
+        bundle="retail",
+    )
+
+    assert response.status_code == 202
+    job = response.json()
+    assert job["status"] == "done"
+    assert job["created_concepts"] == []
+    assert job["skipped_files"] == ["photo.png"]
+    assert not (cortex._bundles_root / "retail" / "photo.md").exists()
 
 
 def test_prepare_zip_slip_extraction_fails_job(client, cortex):

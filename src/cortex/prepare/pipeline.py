@@ -14,8 +14,27 @@ from cortex.models import PrepareError, PrepareJob, PrepareStatus
 from cortex.prepare.llm import LLMProvider
 from cortex.telemetry import logger, tracer
 
-SUPPORTED_SUFFIXES = {".md", ".txt"}
 SAFE_BUNDLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def _is_text(path: Path) -> bool:
+    """Whether a file's content is text (UTF-8, optional BOM).
+
+    Source material may be any text format — prepare is what turns it into OKF.
+    A filename extension is not consulted, so `.csv`, `.html`, markdown without
+    frontmatter, and extension-less files all qualify; binary files don't.
+    """
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return False
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raw = raw[3:]
+    try:
+        raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
 
 
 class ReviewPlanError(ValueError):
@@ -171,7 +190,7 @@ class PrepareRunner:
         job.status = PrepareStatus.REVIEWING
         manifest = self._manifest_factory()
         files = _staged_files(content_root)
-        supported = [f for f in files if Path(f).suffix.lower() in SUPPORTED_SUFFIXES]
+        supported = [f for f in files if _is_text(content_root / f)]
         job.skipped_files = [f for f in files if f not in supported]
         if not supported:
             return {"bundle": forced_bundle, "decisions": {}}
@@ -242,7 +261,7 @@ class PrepareRunner:
         pending: list[PendingWrite] = []
         for source_name, decision in plan["decisions"].items():
             content = (content_root / source_name).read_text(
-                encoding="utf-8", errors="replace"
+                encoding="utf-8-sig", errors="replace"
             )
             existing = (
                 self._read_existing(decision["into"])
@@ -309,7 +328,7 @@ class PrepareRunner:
             text = (self._bundles_root / bundle / f"{rel}.md").read_text(
                 encoding="utf-8"
             )
-        except FileNotFoundError, NotADirectoryError:
+        except (FileNotFoundError, NotADirectoryError):
             return None
         try:
             parsed = parse_concept(text, concept_path)
