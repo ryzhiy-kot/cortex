@@ -65,3 +65,4 @@ class Settings(BaseSettings):
     llm_provider: LLMProviderKind = LLMProviderKind.OLLAMA
     ollama_llm_model: str = "llama3.2"
     vertex_llm_model: str = "gemini-2.0-flash-001"
+    vertex_api_key: str | None = None

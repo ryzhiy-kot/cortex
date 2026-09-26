@@ -4,24 +4,24 @@ from cortex.prepare.llm import LLMProvider
 
 
 class VertexLLM(LLMProvider):
-    """Gemini via Google Cloud (Vertex AI), driven through pydantic-ai.
+    """Gemini via pydantic-ai's native Google provider (API key auth).
 
-    Structured outputs are enforced via the API's JSON response mime type, so
-    prose noise is impossible. Pydantic-ai's OpenTelemetry instrumentation emits
-    `gen_ai.*` spans into the run's trace. Requires Google Cloud application
-    default credentials (`GOOGLE_APPLICATION_CREDENTIALS`) plus
-    `CORTEX_VERTEX_PROJECT` / `CORTEX_VERTEX_LOCATION`.
+    Structured output is enforced via the API's JSON response mime type, so prose
+    noise is impossible. Pydantic-ai's OpenTelemetry instrumentation emits
+    `gen_ai.*` spans into the run's trace. The API key comes from
+    `CORTEX_VERTEX_API_KEY`, or from `GOOGLE_API_KEY` / `GEMINI_API_KEY` when none
+    is passed.
     """
 
     def __init__(
-        self, project: str, location: str, model: str = "gemini-2.0-flash-001"
+        self, api_key: str | None = None, model: str = "gemini-2.0-flash-001"
     ) -> None:
         from pydantic_ai.models.google import GoogleModel
-        from pydantic_ai.providers.google_cloud import GoogleCloudProvider
+        from pydantic_ai.providers.google import GoogleProvider
 
         self._model = GoogleModel(
             model,
-            provider=GoogleCloudProvider(project=project, location=location),
+            provider=GoogleProvider(api_key=api_key),
         )
 
     def complete(
