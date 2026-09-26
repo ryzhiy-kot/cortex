@@ -1,4 +1,3 @@
-import os
 import uuid
 from pathlib import Path
 
@@ -204,20 +203,14 @@ def _build_embeddings(settings: Settings) -> EmbeddingProvider:
             return SentenceTransformersEmbeddings()
 
 
-def _google_api_key_env() -> bool:
-    return bool(os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"))
-
-
 def _build_llm(settings: Settings) -> LLMProvider:
     match settings.llm_provider:
         case LLMProviderKind.OLLAMA:
             return OllamaLLM(settings.ollama_base_url, settings.ollama_llm_model)
         case LLMProviderKind.VERTEX:
-            if not settings.vertex_api_key and not _google_api_key_env():
-                raise ValueError(
-                    "CORTEX_VERTEX_API_KEY is required when llm_provider=vertex "
-                    "(or set GOOGLE_API_KEY/GEMINI_API_KEY)"
-                )
             return VertexLLM(
-                api_key=settings.vertex_api_key, model=settings.vertex_llm_model
+                api_key=settings.vertex_api_key,
+                model=settings.vertex_llm_model,
+                project=settings.vertex_project,
+                location=settings.vertex_location,
             )

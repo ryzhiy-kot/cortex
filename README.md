@@ -216,7 +216,7 @@ All settings come from environment variables prefixed with `CORTEX_`
 | `CORTEX_LLM_PROVIDER`       | `ollama`                   | Prepare's LLM utility: `ollama` or `vertex`. |
 | `CORTEX_OLLAMA_LLM_MODEL`   | `llama3.2`                 | Ollama LLM model for Prepare.        |
 | `CORTEX_VERTEX_LLM_MODEL`   | `gemini-2.0-flash-001`     | Gemini LLM model for Prepare.        |
-| `CORTEX_VERTEX_API_KEY`     | —                          | Gemini API key for Prepare's LLM (or set `GOOGLE_API_KEY`/`GEMINI_API_KEY`). |
+| `CORTEX_VERTEX_API_KEY`     | —                          | Gemini API key for Prepare's LLM; if unset, Prepare uses Vertex AI with application default credentials. |
 
 The `ollama` and `vertex` providers live behind `uv sync --extra embeddings`.
 Prepare writes OKF only: it embeds nothing. Run `POST /ingest` after `POST
