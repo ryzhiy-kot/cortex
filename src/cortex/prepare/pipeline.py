@@ -12,6 +12,7 @@ from cortex.bundle.local import RESERVED
 from cortex.bundle.parser import ParsedConcept, ParseError, parse_concept
 from cortex.models import PrepareError, PrepareJob, PrepareStatus
 from cortex.prepare.llm import LLMProvider
+from cortex.telemetry import logger, tracer
 
 SUPPORTED_SUFFIXES = {".md", ".txt"}
 SAFE_BUNDLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -175,18 +176,24 @@ class PrepareRunner:
         if not supported:
             return {"bundle": forced_bundle, "decisions": {}}
 
-        prompt = {
-            "task": "REVIEW",
-            "forced_bundle": forced_bundle,
-            "files": supported,
-            "bundles": manifest,
-        }
-        response = self._llm.complete(
-            system=_REVIEW_SYSTEM.format(spec=self._spec),
-            user=json.dumps(prompt, indent=2),
-        )
-        plan = _extract_json(response)
-        return self._validate_plan(plan, forced_bundle, supported, manifest)
+        with tracer().start_as_current_span("prepare.review") as span:
+            span.set_attribute("cortex.files", len(supported))
+            span.set_attribute("cortex.bundles", len(manifest))
+            prompt = {
+                "task": "REVIEW",
+                "forced_bundle": forced_bundle,
+                "files": supported,
+                "bundles": manifest,
+            }
+            response = self._llm.complete(
+                system=_REVIEW_SYSTEM.format(spec=self._spec),
+                user=json.dumps(prompt, indent=2),
+            )
+            plan = _extract_json(response)
+            validated = self._validate_plan(plan, forced_bundle, supported, manifest)
+            span.set_attribute("cortex.decisions", len(validated["decisions"]))
+            span.set_attribute("cortex.bundle", validated["bundle"])
+            return validated
 
     def _validate_plan(
         self,
@@ -242,24 +249,28 @@ class PrepareRunner:
                 if decision["action"] == "consolidate"
                 else None
             )
-            prompt = {
-                "task": "AUTHOR",
-                "source": source_name,
-                "content": content,
-                "decision": decision,
-                "existing_concept": existing,
-            }
-            response = self._llm.complete(
-                system=_AUTHOR_SYSTEM.format(spec=self._spec),
-                user=json.dumps(prompt, indent=2),
-            )
-            raw = _strip_markdown_fence(response)
-            try:
-                parsed = parse_concept(raw, source_name)
-            except ParseError as exc:
-                raise PrepareFailure(
-                    source_name, f"LLM authored invalid OKF: {exc}"
-                ) from exc
+            with tracer().start_as_current_span("prepare.author") as span:
+                span.set_attribute("cortex.source", source_name)
+                span.set_attribute("cortex.action", decision["action"])
+                span.set_attribute("cortex.into", decision.get("into") or "")
+                prompt = {
+                    "task": "AUTHOR",
+                    "source": source_name,
+                    "content": content,
+                    "decision": decision,
+                    "existing_concept": existing,
+                }
+                response = self._llm.complete(
+                    system=_AUTHOR_SYSTEM.format(spec=self._spec),
+                    user=json.dumps(prompt, indent=2),
+                )
+                raw = _strip_markdown_fence(response)
+                try:
+                    parsed = parse_concept(raw, source_name)
+                except ParseError as exc:
+                    raise PrepareFailure(
+                        source_name, f"LLM authored invalid OKF: {exc}"
+                    ) from exc
             label = _source_label(job, source_name)
             if decision["action"] == "consolidate":
                 existing_sources = self._existing_sources(existing)
@@ -306,7 +317,21 @@ class PrepareRunner:
             return None
         return {"frontmatter": parsed.frontmatter, "body": parsed.body}
 
-    def _persist(
+    def _persist(self, job: PrepareJob, bundle: str, pending: list[PendingWrite]) -> None:
+        with tracer().start_as_current_span("prepare.persist") as span:
+            span.set_attribute("cortex.writes", len(pending))
+            try:
+                self._persist_impl(job, bundle, pending)
+            except Exception:
+                logger.error(
+                    "prepare persist failed for job %s", job.job_id, exc_info=True
+                )
+                raise
+            finally:
+                span.set_attribute("cortex.created", len(job.created_concepts))
+                span.set_attribute("cortex.updated", len(job.updated_concepts))
+
+    def _persist_impl(
         self, job: PrepareJob, bundle: str, pending: list[PendingWrite]
     ) -> None:
         root = self._bundles_root.resolve()

@@ -1,9 +1,12 @@
 from pathlib import PurePosixPath
 
+from opentelemetry import trace
+
 from cortex.bundle.indexer import index_for
 from cortex.bundle.local import RESERVED
 from cortex.bundle.parser import parse_concept
 from cortex.models import IngestError, IngestResponse
+from cortex.telemetry import logger
 from cortex.vector.store import VectorStore
 
 
@@ -43,7 +46,12 @@ class Ingester:
                 else:
                     response.indexed += 1
             except Exception as exc:  # noqa: BLE001 - lenient ingest: skip + report per-file
-                response.errors.append(IngestError(path=f"{self._bundle}/{rel_path}", reason=str(exc)))
+                path = f"{self._bundle}/{rel_path}"
+                response.errors.append(IngestError(path=path, reason=str(exc)))
+                logger.error("ingest failed for %s: %s", path, exc)
+                span = trace.get_current_span()
+                if span.is_recording():
+                    span.add_event("exception", {"concept_path": path, "message": str(exc)})
 
         if rel_dir:
             prefix = f"{self._bundle}/{rel_dir.strip('/')}".rstrip("/")

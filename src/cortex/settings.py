@@ -34,6 +34,25 @@ class Settings(BaseSettings):
         description="Directory where uploaded source material is staged before Prepare.",
     )
 
+    traces_path: Path = Field(
+        default=Path(".cortex/traces"),
+        description="Directory where per-run trace files are written, one JSON-lines file per prepare job or ingest run.",
+    )
+    trace_retention_days: int = Field(
+        default=7,
+        ge=1,
+        description="Trace files older than this (by file mtime) are pruned at startup and after runs.",
+    )
+
+    log_path: Path = Field(
+        default=Path(".cortex/logs/cortex.log"),
+        description="JSON-lines log file for the cortex logger (size-rotating).",
+    )
+    log_level: str = Field(
+        default="info",
+        description="Log level for the cortex logger: debug | info | warning | error.",
+    )
+
     embedding_provider: EmbeddingProviderKind = (
         EmbeddingProviderKind.SENTENCE_TRANSFORMERS
     )

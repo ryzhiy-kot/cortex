@@ -48,6 +48,14 @@ _Avoid_: ingest, import, injection
 The frontmatter field on prepared concepts recording which source material they were produced from. Preserved and appended on consolidation.
 _Avoid_: provenance, origin (as a field name)
 
+**Trace**:
+The ordered record of a single task run (prepare or ingest): its steps and decisions, every LLM interaction (requests, responses, token usage), and its failures. Written as one JSON-lines file per run under the traces path and readable through the API.
+_Avoid_: log, logfile, history, telemetry record
+
+**Trace file**:
+The `.jsonl` file a run's trace is written to: `{traces path}/{task}/{run_id}.jsonl`. The unique id of one run (the prepare `job_id` or the ingest `run_id`) is the filename, so a failed run stays diagnosable after a restart.
+_Avoid_: log file, audit
+
 **Embedding provider**:
 An abstraction over the service that generates vector embeddings for concept bodies. Config-switchable: sentence-transformers (local), ollama, or Vertex AI.
 _Avoid_: embedding model, vectorizer

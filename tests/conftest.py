@@ -37,6 +37,8 @@ def settings(tmp_path: Path, bundles_root: Path) -> Settings:
         chroma_path=tmp_path / "chroma",
         chroma_collection="test_concepts",
         staging_path=tmp_path / "staging",
+        traces_path=tmp_path / "traces",
+        log_path=tmp_path / "logs" / "cortex.log",
     )
 
 
@@ -57,8 +59,6 @@ def cortex(settings: Settings, stub_llm: StubLLM) -> Cortex:
 
 @pytest.fixture
 def client(cortex: Cortex, settings: Settings):
-    
-
     app = create_app(settings, cortex=cortex)
     with TestClient(app) as test_client:
         yield test_client

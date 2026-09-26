@@ -29,6 +29,10 @@ class IngestError(BaseModel):
 
 
 class IngestResponse(BaseModel):
+    run_id: str = Field(
+        "",
+        description="Identifier of this ingest run; addresses its trace file via GET /ingest/{run_id}/trace.",
+    )
     indexed: int = Field(0, description="Concepts newly added to the index.")
     updated: int = Field(
         0, description="Concepts re-embedded because their file changed."

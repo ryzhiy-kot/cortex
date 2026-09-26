@@ -1,3 +1,4 @@
+from pathlib import Path as PPath
 from typing import Annotated
 
 from fastapi import (
@@ -9,6 +10,7 @@ from fastapi import (
     HTTPException,
     Path,
     Request,
+    Response,
     UploadFile,
 )
 
@@ -336,3 +338,80 @@ def prepare_job(
     if job is None:
         raise HTTPException(status_code=404, detail=f"unknown prepare job: {job_id}")
     return job
+
+
+@router.get(
+    "/prepare/{job_id}/trace",
+    summary="Read a Prepare job's trace",
+    tags=["prepare"],
+    responses={
+        200: {
+            "content": {"application/x-ndjson": {}},
+            "description": "One JSON object per line: the job's LLM interactions, steps, and failures.",
+        },
+        404: {"description": "Unknown job id, or the job's trace file no longer exists."},
+    },
+)
+def prepare_trace(
+    job_id: Annotated[
+        str,
+        Path(
+            description="Job id returned by POST /prepare.",
+            openapi_examples={
+                "A job id": {
+                    "summary": "As returned by POST /prepare.",
+                    "value": "a1b2c3",
+                }
+            },
+        ),
+    ],
+    cortex: CortexDep,
+) -> Response:
+    """Return the run's trace file as NDJSON. Every span of the run — the
+    review/author/persist steps and each LLM interaction with its prompts,
+    responses, and token usage — is one line. A failed run stays diagnosable
+    here after a restart.
+    """
+    return _read_trace(cortex.traces_path / "prepare" / f"{job_id}.jsonl")
+
+
+@router.get(
+    "/ingest/{run_id}/trace",
+    summary="Read an ingest run's trace",
+    tags=["ingest"],
+    responses={
+        200: {
+            "content": {"application/x-ndjson": {}},
+            "description": "One JSON object per line: the run's steps and per-file failures.",
+        },
+        404: {"description": "Unknown run id, or the run's trace file no longer exists."},
+    },
+)
+def ingest_trace(
+    run_id: Annotated[
+        str,
+        Path(
+            description="Run id returned in the POST /ingest response.",
+            openapi_examples={
+                "A run id": {
+                    "summary": "As returned by POST /ingest.",
+                    "value": "3f2a91cb",
+                }
+            },
+        ),
+    ],
+    cortex: CortexDep,
+) -> Response:
+    """Return the run's trace file as NDJSON. The run span and one span per
+    bundle are the lines; `exception` events record per-file ingest failures.
+    """
+    return _read_trace(cortex.traces_path / "ingest" / f"{run_id}.jsonl")
+
+
+def _read_trace(trace_file: PPath) -> Response:
+    if not trace_file.is_file():
+        raise HTTPException(status_code=404, detail=f"trace file not found: {trace_file.stem}")
+    return Response(
+        content=trace_file.read_text(encoding="utf-8"),
+        media_type="application/x-ndjson",
+    )

@@ -209,6 +209,10 @@ All settings come from environment variables prefixed with `CORTEX_`
 | `CORTEX_VERTEX_LOCATION`    | `us-central1`              | Vertex AI region.                    |
 | `CORTEX_VERTEX_EMBEDDING_MODEL` | `text-embedding-005`   | Vertex embedding model.              |
 | `CORTEX_STAGING_PATH`       | `.cortex/staging`          | Staging dir for uploaded source material. |
+| `CORTEX_TRACES_PATH`        | `.cortex/traces`           | Per-run trace files (`prepare/<job_id>.jsonl`, `ingest/<run_id>.jsonl`), one span per line; readable via `GET /prepare/{job_id}/trace` and `GET /ingest/{run_id}/trace`. |
+| `CORTEX_TRACE_RETENTION_DAYS` | `7`                      | Trace files older than this (by mtime) are pruned at startup and after runs. |
+| `CORTEX_LOG_PATH`           | `.cortex/logs/cortex.log`  | JSON-lines log file (size-rotating).      |
+| `CORTEX_LOG_LEVEL`          | `info`                     | Cortex logger level: `debug`, `info`, `warning`, or `error`. |
 | `CORTEX_LLM_PROVIDER`       | `ollama`                   | Prepare's LLM utility: `ollama` or `vertex`. |
 | `CORTEX_OLLAMA_LLM_MODEL`   | `llama3.2`                 | Ollama LLM model for Prepare.        |
 | `CORTEX_VERTEX_LLM_MODEL`   | `gemini-2.0-flash-001`     | Vertex LLM model for Prepare.        |

@@ -2,8 +2,11 @@ import uuid
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
+from opentelemetry import trace
+
 from cortex.models import PrepareJob, PrepareStatus
 from cortex.prepare.pipeline import PrepareRunner
+from cortex.telemetry import logger, task_run
 
 
 class PrepareQueue:
@@ -45,7 +48,30 @@ class PrepareQueue:
 
     def _process(self, item: dict) -> None:
         job: PrepareJob = item["job"]
-        self._runner.run(job, item["payload"], item["filename"], item["bundle"])
+        logger.debug("prepare %s processing source=%s", job.job_id, item["filename"])
+        with task_run(
+            "prepare", job.job_id, source=item["filename"], bundle=item["bundle"] or ""
+        ) as span:
+            self._runner.run(job, item["payload"], item["filename"], item["bundle"])
+            span.set_attribute("cortex.status", job.status.value)
+            if job.status is PrepareStatus.FAILED:
+                messages = [str(error.reason) for error in job.errors]
+                span.set_attribute("cortex.errors", messages)
+                span.set_status(trace.Status(trace.StatusCode.ERROR, "; ".join(messages)))
+        if job.status is PrepareStatus.FAILED:
+            logger.error(
+                "prepare %s failed errors=%s",
+                job.job_id,
+                [str(error.reason) for error in job.errors],
+            )
+        else:
+            logger.info(
+                "prepare %s done created=%d updated=%d skipped=%d",
+                job.job_id,
+                len(job.created_concepts),
+                len(job.updated_concepts),
+                len(job.skipped_files),
+            )
 
     def get(self, job_id: str) -> PrepareJob | None:
         return self._jobs.get(job_id)

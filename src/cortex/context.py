@@ -1,3 +1,4 @@
+import uuid
 from pathlib import Path
 
 from cortex.bundle.local import RESERVED, LocalBundleStore
@@ -14,6 +15,13 @@ from cortex.prepare.pipeline import PrepareRunner
 from cortex.prepare.queue import PrepareQueue
 from cortex.prepare.vertex import VertexLLM
 from cortex.settings import EmbeddingProviderKind, LLMProviderKind, Settings
+from cortex.telemetry import (
+    init_tracing,
+    instrument_ollama,
+    setup_logging,
+    task_run,
+    tracer,
+)
 from cortex.vector.store import VectorStore
 
 
@@ -27,6 +35,9 @@ class Cortex:
     ) -> None:
         self._settings = settings
         self._bundles_root = settings.bundles_root
+        self.traces_path = settings.traces_path
+        setup_logging(settings.log_path, settings.log_level)
+        init_tracing(settings.traces_path, settings.trace_retention_days)
         self.embeddings = embeddings or _build_embeddings(settings)
         self.vector = VectorStore(
             path=str(settings.chroma_path),
@@ -36,6 +47,8 @@ class Cortex:
         self.bundles: dict[str, LocalBundleStore] = {}
         self._load_bundles()
         llm = llm or _build_llm(settings)
+        if isinstance(llm, OllamaLLM):
+            instrument_ollama()
         runner = PrepareRunner(
             llm=llm,
             bundles_root=settings.bundles_root,
@@ -90,21 +103,30 @@ class Cortex:
     def ingest(self, bundle: str | None = None, path: str | None = None) -> dict:
         self._load_bundles()
         names = [bundle] if bundle else sorted(self.bundles)
-        response = {
-            "indexed": 0,
-            "updated": 0,
-            "deleted": 0,
-            "index_files": 0,
-            "errors": [],
-        }
-        for name in names:
-            store = self._store(name)
-            ingester = Ingester(store, self.vector, name)
-            partial = ingester.ingest(path or "")
-            for key in ("indexed", "updated", "deleted", "index_files"):
-                response[key] += getattr(partial, key)
-            response["errors"].extend(error.model_dump() for error in partial.errors)
-        return response
+        run_id = uuid.uuid4().hex[:12]
+        with task_run("ingest", run_id, bundles=",".join(names), path=path or "") as span:
+            response = {
+                "run_id": run_id,
+                "indexed": 0,
+                "updated": 0,
+                "deleted": 0,
+                "index_files": 0,
+                "errors": [],
+            }
+            for name in names:
+                with tracer().start_as_current_span("ingest.bundle") as bundle_span:
+                    bundle_span.set_attribute("cortex.bundle", name)
+                    store = self._store(name)
+                    ingester = Ingester(store, self.vector, name)
+                    partial = ingester.ingest(path or "")
+                    for key in ("indexed", "updated", "deleted", "index_files"):
+                        response[key] += getattr(partial, key)
+                    bundle_span.set_attribute("cortex.indexed", partial.indexed)
+                    bundle_span.set_attribute("cortex.updated", partial.updated)
+                    bundle_span.set_attribute("cortex.deleted", partial.deleted)
+                    response["errors"].extend(error.model_dump() for error in partial.errors)
+            span.set_attribute("cortex.status", "failed" if response["errors"] else "done")
+            return response
 
     def search(self, request) -> dict:
         from cortex.search import search
