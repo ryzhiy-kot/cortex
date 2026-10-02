@@ -63,6 +63,6 @@ class Settings(BaseSettings):
     vertex_embedding_model: str = "text-embedding-005"
 
     llm_provider: LLMProviderKind = LLMProviderKind.OLLAMA
-    ollama_llm_model: str = "llama3.2"
+    ollama_llm_model: str = "qwen3:8b"
     vertex_llm_model: str = "gemini-2.0-flash-001"
     vertex_api_key: str | None = None

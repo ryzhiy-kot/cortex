@@ -44,6 +44,10 @@ class VertexLLM(LLMProvider):
     ) -> BaseModel | str:
         from pydantic_ai import Agent
 
-        agent = Agent(model=self._model, system_prompt=system, output_type=output_type)
+        agent = Agent(
+            model=self._model,
+            system_prompt=system,
+            output_type=str if output_type is None else output_type,
+        )
         agent.instrument = True
         return agent.run_sync(user).output

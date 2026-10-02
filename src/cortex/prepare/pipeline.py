@@ -20,6 +20,7 @@ SAFE_BUNDLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
 class ReviewDecision(BaseModel):
+    source: str
     action: Literal["create", "consolidate"]
     into: str | None = None
     reason: str
@@ -27,7 +28,7 @@ class ReviewDecision(BaseModel):
 
 class ReviewPlan(BaseModel):
     bundle: str | None = None
-    decisions: dict[str, ReviewDecision] = {}
+    decisions: list[ReviewDecision] = []
 
 
 def _is_text(path: Path) -> bool:
@@ -189,7 +190,7 @@ class PrepareRunner:
         supported = [f for f in files if _is_text(content_root / f)]
         job.skipped_files = [f for f in files if f not in supported]
         if not supported:
-            return ReviewPlan(bundle=forced_bundle, decisions={})
+            return ReviewPlan(bundle=forced_bundle, decisions=[])
 
         with tracer().start_as_current_span("prepare.review") as span:
             span.set_attribute("cortex.files", len(supported))
@@ -229,8 +230,9 @@ class PrepareRunner:
                 f"LLM did not choose a valid bundle name (got: {bundle!r})"
             )
         allowed = set(supported)
-        decisions: dict[str, ReviewDecision] = {}
-        for source_name, decision in plan.decisions.items():
+        decisions: list[ReviewDecision] = []
+        for decision in plan.decisions:
+            source_name = decision.source
             if source_name not in allowed:
                 raise ReviewPlanError(
                     f"review names unknown source file: {source_name}"
@@ -241,9 +243,9 @@ class PrepareRunner:
                     raise ReviewPlanError(
                         f"decision for {source_name} consolidates into unknown concept: {decision.into}"
                     )
-                decisions[source_name] = decision.model_copy(update={"into": into})
+                decisions.append(decision.model_copy(update={"into": into}))
             else:
-                decisions[source_name] = decision
+                decisions.append(decision)
             allowed.discard(source_name)
         if allowed:
             raise ReviewPlanError(f"review omitted decisions for: {sorted(allowed)}")
@@ -253,7 +255,8 @@ class PrepareRunner:
         job.status = PrepareStatus.AUTHORING
         bundle = plan.bundle
         pending: list[PendingWrite] = []
-        for source_name, decision in plan.decisions.items():
+        for decision in plan.decisions:
+            source_name = decision.source
             content = (content_root / source_name).read_text(
                 encoding="utf-8-sig", errors="replace"
             )

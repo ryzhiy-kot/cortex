@@ -44,10 +44,10 @@ class StubLLM(LLMProvider):
         bundle = prompt.get("forced_bundle") or "knowledge"
         return {
             "bundle": bundle,
-            "decisions": {
-                name: {"action": "create", "reason": "new knowledge"}
+            "decisions": [
+                {"source": name, "action": "create", "reason": "new knowledge"}
                 for name in prompt["files"]
-            },
+            ],
         }
 
     @staticmethod

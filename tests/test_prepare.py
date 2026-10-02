@@ -46,14 +46,15 @@ def test_prepare_consolidates_into_existing_concept_preserving_path(
     def review_plan(prompt: dict) -> dict:
         return {
             "bundle": "retail",
-            "decisions": {
-                name: {
+            "decisions": [
+                {
+                    "source": name,
                     "action": "consolidate",
                     "into": "retail/tables/orders",
                     "reason": "extends orders",
                 }
                 for name in prompt["files"]
-            },
+            ],
         }
 
     def author(prompt: dict) -> str:
@@ -103,9 +104,10 @@ def test_prepare_authoring_failure_is_atomic(client, cortex, stub_llm):
 def test_prepare_reserved_name_fails_without_writing(client, cortex, stub_llm):
     stub_llm.review_plan = lambda prompt: {
         "bundle": "retail",
-        "decisions": {
-            name: {"action": "create", "reason": "new"} for name in prompt["files"]
-        },
+        "decisions": [
+            {"source": name, "action": "create", "reason": "new"}
+            for name in prompt["files"]
+        ],
     }
     stub_llm.author = lambda prompt: (
         "---\ntype: x\ntitle: x\ndescription: x\n---\nBody."
